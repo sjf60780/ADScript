@@ -1,766 +1,713 @@
-function Edit-ADObject {
+function Edit-ADObject
+{
   Clear-Host
-
   Write-Host "`nEditing Active Directory Computer Objects" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-  Write-Host "This script will allow you to add new Computer AD objects to the SGF.EDUBEAR.NET domain."
-  Write-Host "It also has the capability to add multiple objects from a CSV file as well!"
+  Write-Host "This script will allow you to edit existing Computer AD objects on the SGF.EDUBEAR.NET domain."
   Write-Host "To get started, please select one of the options listed below."
 
   Write-Host "`nOPTIONS" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-  Write-Host "- Enter '1' to manually navigate to the desired OU path."
-  Write-Host "- Enter '2' to find OU using DistinguishedName, CanonicalName, or select Keywords."
-  Write-Host "- Enter '3' to pass a CSV file through the script. (Useful when adding multiple machines)"
-  Write-Host "- Press Enter to quit.`n"
+  Write-Host "- Enter '1' to find the desired object by navigating the AD site."
+  Write-Host "- Enter '2' to enter keywords to search for the desired object."
+  Write-Host "- Press ENTER to return to the main menu.`n"
 
   # Logic for handling user's input
   do {
     Write-Host "Enter your Selection:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-    $Selection = Read-Host
-    if ($Selection -eq "") {
-      Exit
+    $Method = Read-Host
+    if ($Method -eq "")
+    {
+      Break
     }
-    elseif ($Selection -eq 1) {
-      [bool]$Manual = $True
-      [bool]$Auto = $False
-    }
-    elseif ($Selection -eq 2) {
-      [bool]$Manual = $False
-      [bool]$Auto = $False
-    }
-    elseif ($Selection -eq 3) {
-      [bool]$Manual = $False
-      [bool]$Auto = $True
-    }
-    else {
-      Write-Host "`nYour selection doesn't exist. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
-    }
-  } while ($Manual -eq $null -or $Auto -eq $null)
+    elseif ($Method -eq 1 -or $Method -eq 2)
+    {
+      $OUPath = $StartingOU
+      [Array]$EditObjects = @()
 
-  # Automated Side of the script pulling values from CSV File
-  if ($Auto -eq $True) {
+      # Logic for manually navigating to desired OU
+      if ($Method -eq 1)
+      {
+        $OUPath = Show-ADForest "Navigating Active Directory Site for Computer Objects to Modify" "Edit" -ShowComputers
 
-    Clear-Host
-    Write-Host "`nImporting Computer Objects via external CSV File" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-    Write-Host "To add computer objects using a CSV file, the file must contain the following headers in order:"
-    Write-Host "FUNCTION`tCOMPUTERNAME`tCOMPUTERMAC`tCOMPUTERDESC`tCOMPUTEROU`tDEPLOYMENTSERVER" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-    Write-Host "`nOnce that is done, feel free to add as many computer objects as you need."
-    Write-Host "After the import is completed, there will be a log file created at"
-    Write-Host "$($LogFilePath)" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-    Write-Host " detailing whether the object was successfully created or not."
+        $PotentialObjects = Get-ADComputer -Filter "Name -like '*'" -SearchBase $OUPath -SearchScope OneLevel -Properties netbootGuid, Description, netbootMachineFilePath
 
-    $Valid = $False
-    do {
-      Write-Host "`nEnter the full path of the CSV file you wish to import:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-      $CSVFile = Read-Host
-      if ($CSVFile) {
-        $CSVPath = Test-Path $CSVFile -Include "*.csv"
-        if ($CSVPath -eq $True) {
-          $ValidHeaders = $True
-          $FileHeaders = (Get-Content $CSVFile -TotalCount 1).Split(',')
-          for ([int]$i = 0; $i -lt $FileHeaders.Count; $i++) {
-            if ($FileHeaders[$i].Trim() -ne $CorrectCSVHeaders[$i]) {
-              $ValidHeaders = $False
-            }
+        $ComputerTable = @()
+        For ([int]$i = 0; $i -lt $PotentialObjects.Count; $i++)
+        {
+          if ($PotentialObjects[$i].netbootGUID -ne $NULL)
+          {
+            $netbootGUID = ($PotentialObjects[$i].netbootGUID | ForEach-Object ToString X2) -join ""
+            $ComputerMAC = $netbootGUID.SubString($netbootGUID.length - 12)
           }
-          if ($ValidHeaders -eq $True) {
-            $Valid = $True
-          }
-        }
-        if ($CSVPath -eq $False -or $ValidHeaders -eq $False) {
-          Write-Host "`n$CSVFile is not a valid CSV file. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-          if ($ValidHeaders -eq $False) {
-            Write-Host "Make sure that your CSV File has the following headers in this order:" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-            Write-Host "COMPUTERNAME,COMPUTERMAC,COMPUTERDESC,COMPUTEROU,DEPLOYMENTSERVER" -ForegroundColor $FGLabel -BackgroundColor $BGBold
-          }
-        }
-      }
-    } while (!$Valid)
-
-    # Validate CSVFile being passed as an argument
-    if ($CSVPath -eq $True -and $ValidHeaders -eq $True) {
-      $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
-      [int]$TotalComputers = Import-CSV -Path $CSVFile | Measure-Object | Select-Object -expand Count
-      [int]$FinishedComputers = 0
-      [int]$Success = 0
-      [int]$Failed = 0
-      Clear-Host
-      Write-Host "`nImporting AD Objects from: $CSVFile`n" -ForegroundColor $FGSuccess -BackgroundColor $BGBold
-
-      Import-CSV -Path $CSVFile | ForEach-Object {
-
-        $FinishedComputers += 1
-        Write-Host "Importing Object $FinishedComputers of $TotalComputers" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-
-        $ErrorLog = ''
-        $Computer = [PSCustomObject]@{
-          Name = $_.COMPUTERNAME
-          MAC = $_.COMPUTERMAC
-          Desc = $_.COMPUTERDESC
-          OU = $_.COMPUTEROU
-          DP = $_.DEPLOYMENTSERVER
-        }
-
-        # Check if given value meets the requirements of a valid computer name
-        # Then check if the given Computer Name is already tied to a Computer Object on the AD
-        if ($Computer.Name -eq "") {
-          $ErrorLog += "No Name given;"
-        }
-        elseif ($Computer.Name -match '^\.|([\\/:\*\?"<>\|])+') {
-          $ErrorLog += "Computer name contains invalid character(s);"
-        }
-        elseif ($Computer.Name.Length -notin 1..15) {
-          $ErrorLog += "Computer name doesn't meet length requirements;"
-        }
-        elseif ($Computer.Name.ToUpper() -in $ReservedWords) {
-          $ErrorLog += "Computer name is a reserved word;"
-        }
-        else {
-          $Computer.Name = $Computer.Name.ToUpper()
-          $CheckName = Get-ADObject -Filter "ObjectClass -eq 'computer' -and Name -eq '$($Computer.Name)'"
-          if ($CheckName -ne $null) {
-            $ErrorLog += "'$($Computer.Name)' already exists in the AD;"
-          }
-        }
-
-        # Check if the given MAC Address is already tied to a Computer Object on the AD
-        if ($Computer.MAC -eq "") {
-          $ErrorLog += "No MAC Address given;"
-        }
-        elseif ($Computer.MAC -match ($ValidMACPatterns -join '|')) {
-          $MACAddress = $Computer.MAC.ToUpper() -replace '\W'
-          [guid]$NetbootGUID = "00000000-0000-0000-0000-$MACAddress"
-          $CheckMAC = Get-ADComputer -Filter {netbootGUID -eq $NetbootGUID}
-          if ($CheckMAC -ne $null) {
-            $ErrorLog += "MAC Address is tied to $($CheckMAC.Name);"
-          }
-        }
-        else {
-          $ErrorLog += "MAC Address is not properly formatted;"
-        }
-
-        # Check if given keywords can find an existing OU on the AD
-        if ($Computer.OU -eq "") {
-          $PotentialOUs = ""
-          $ErrorLog += "No OU given;"
-        }
-        else {
-          $OUManageGroups = Get-ADGroup -Filter {Name -like "*OUMANAGE*"} | Select-Object -ExpandProperty Name
-          $CurrentUserGroups = Get-ADPrincipalGroupMembership -Identity $([Environment]::UserName) | Select-Object -ExpandProperty Name
-          $ManageableOUS = $OUManageGroups | ?{$CurrentUserGroups -contains $_}
-          $PotentialOUs = @()
-          $OUKeywords = $Computer.OU -split " "
-          ForEach ($Keyword in $OUKeywords) {
-
-            # Lists every OU on the AD that has the given keyword
-            $ValidOUPath = Get-ADOrganizationalUnit -Filter "Name -like '*'" -SearchBase $StartingOU -Properties CanonicalName -PipelineVariable OU |
-            Where-Object {$OU.Name -like $Keyword -or $OU.DistinguishedName -match $Keyword -or $OU.CanonicalName -match $Keyword} |
-            Select-Object -ExpandProperty DistinguishedName
-
-            # Verify Current User has Access to add objects to these OUs
-            $ManageableOUS -split '-' | Where-Object {$_ -notin ("RM", "OUMANAGE")} -PipelineVariable Keyword | ForEach-Object {
-              $ValidOUPath = $ValidOUPath | ?{$_ -match $Keyword}
-            }
-
-            # Performing an Intersection of all keywords to narrow down potential OU choices
-            if ($PotentialOUs.Count -eq 0 -and $ValidOUPath -ne "") {
-              $PotentialOUs = $ValidOUPath
-            }
-            else {
-              $PotentialOUs = $PotentialOUs | ?{$ValidOUPath -contains $_}
-            }
+          else
+          {
+            $ComputerMAC = $NULL
           }
 
-          if ($PotentialOUs.Count -gt 1) {
-            $ErrorLog += "Couldn't narrow search down to one OU;"
+          $ShortOU = ($PotentialObjects[$i].DistinguishedName -Split ',' | Where-Object {$_ -like '*OU*'}).SubString(3)
+          [array]::Reverse($ShortOU)
+          $ShortOU = $ShortOU -join "/"
+
+          if ($PotentialObjects[$i].netbootMachineFilePath -ne $NULL)
+          {
+            $ShortDP = (($PotentialObjects[$i].netbootMachineFilePath -replace "01.MISSOURISTATE.EDU") -split "-")[2].ToUpper()
           }
-          elseif ($PotentialOUs.Count -eq 0) {
-            $ErrorLog += "Could not find an OU you have access to matching those keywords;"
+          else
+          {
+            $ShortDP = $NULL
           }
-        }
 
-        # Check if entered DeploymentServer value can match to a Distribution Point
-        if ($Computer.DP -eq "") {
-          $ErrorLog += "No Deployment Server given;"
-        }
-        else {
-          $NetbootMFP = $DistributionPoints | Where-Object {$_ -match $Computer.DP}
-          if ($NetbootMFP -eq $null) {
-            $ErrorLog += "The Deployment Server is not valid;"
+          $TableRow =
+          [PSCustomObject]@{
+            EDIT = "[ ]"
+            ID = $i + 1
+            NAME = $PotentialObjects[$i].Name
+            MAC = $ComputerMAC
+            DP = $ShortDP
+            DESC = $PotentialObjects[$i].Description
+            OU = $ShortOU
           }
-          else {
-            $DeploymentServer = $NetbootMFP -replace '\\'
-          }
+          $ComputerTable += $TableRow
         }
 
-        $ComputerLog = [PSCustomObject]@{
-          COMPUTERNAME = $Computer.Name
-          OUPATH = $PotentialOUs
-          ADDEDBY = $([Environment]::UserName)
-          DATEADDED = "N/A"
-          SUCCESSFUL = $False
-          ERRORS = ''
-        }
-
-        if ($ErrorLog -eq "") {
-          New-ADComputer -Name $Computer.Name -SamAccountName $Computer.Name -Description $Computer.Desc -OtherAttributes @{'netbootGUID' = $NetbootGUID; 'netbootMachineFilePath' = $DeploymentServer} -Path $PotentialOUs
-          $CheckAddition = Get-ADComputer -Identity $Computer.Name
-          if ($CheckAddition) {
-            $Success += 1
-            $ComputerLog.DATEADDED = Get-Date
-            $ComputerLog.SUCCESSFUL = $True
-          }
-        }
-        else {
-          $Failed += 1
-          $ErrorLog = $ErrorLog.SubString(0, $ErrorLog.Length - 1)
-          $ComputerLog.ERRORS = $ErrorLog
-        }
-        $ComputersAdded += $ComputerLog
-      }
-
-      $StopWatch.Stop()
-      Get-Process Excel -ErrorAction SilentlyContinue | Select-Object -Property ID | Stop-Process
-      Start-Sleep -Milliseconds 300
-      $ComputersAdded | Export-CSV -Path $LogFilePath -NoTypeInformation -Append
-      Write-Host "`nImport of file $CSVFile is Finished" -ForegroundColor $FGSuccess -BackgroundColor $BGBold
-      Write-Host "- $Success of $TotalComputers objects were imported successfully." -ForegroundColor $FGNotice -BackgroundColor $BGBold
-      Write-Host "- $Failed of $TotalComputers objects were unable to be imported." -ForegroundColor $FGNotice -BackgroundColor $BGBold
-      Write-Host "`nCheck the log file listed below for more information."-ForegroundColor $FGHeader -BackgroundColor $BGBold
-      Write-Host "$LogFilePath" -ForegroundColor $FGLabel -BackgroundColor $BGBold
-      Write-Host "`nThis operation took $($StopWatch.Elapsed.TotalSeconds) seconds."
-      Write-Host "`nPress Enter to quit." -ForegroundColor $FGInput -BackgroundColor $BGInput
-      Read-Host
-    }
-  }
-
-  # Manual Side of the Script
-  else {
-    $OUPath = $StartingOU
-    $Confirmation = 0
-
-    do {
-    # Logic for manually navigating to desired OU
-      if ($Manual -eq $True -and ($Repeat -eq 2 -or $Confirmation -eq 1 -or $Confirmation -eq 0)) {
-        [bool]$Done = $False
-        do {
+        # Select Computer Object if there are multiple available
+        $Done = $FALSE
+        do
+        {
           Clear-Host
-          Write-Host "`nFinding Computer OU Location Manually" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-          Write-Host "`nDefault AD Location:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-          Write-Host "`t$StartingOU"
-          if ($OUPath -ne $StartingOU) {
-            Write-Host "Parent  AD Location:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-            Write-Host "`t$ParentOU"
-          }
-          Write-Host "Current AD Location:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-          Write-Host "`t$OUPath`n"
+          Write-Host "`nNavigating Active Directory Site for Computer Objects to Modify" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+          Write-Host "`nCurrent AD Location:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+      		Write-Host "`t$OUPath`n" -NoNewLine
+          Write-Host "`nFound $($ComputerTable[-1].ID) potential Computer Object(s)." -ForegroundColor $FGNotice -BackgroundColor $BGBold -NoNewLine
 
-          # Get all Child OUs from current OU
-          $ChildOUs = Get-ADOrganizationalUnit -Filter 'Name -like "*"' -SearchBase $OUPath -SearchScope OneLevel
-          if (!$ChildOUs) {
-            Write-Host "This OU does not contain any child OUs.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-          }
-          else {
-            Write-Host "ID`tNAME" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-            [int]$Index = 1
-            ForEach ($OU in $ChildOUs) {
-              Write-Host "$Index`t$($OU.Name)"
-              $Index += 1
-            }
-            Write-Host
-          }
+          $ComputerTable | Format-Table | Format-Color @{'[X]' = 'Green'}
 
           # List available options for current OU
-          Write-Host "`OPTIONS" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-          if ($Confirmation -eq 1) {
-            Write-Host "- Enter '+' to select this OU for your Computer Object."
+          Write-Host "OPTIONS" -ForegroundColor $FGHeader -BackgroundColor $BGBold
+          if ($ComputerTable.Count -gt 0)
+          {
+            Write-Host "- Enter '+' to edit currently selected Computer Object(s)"
+            Write-Host "- Enter the ID number(s) to select/deselect a Computer Object(s) to edit"
+            Write-Host "* To select multiple objects, enter all desired ID numbers separated by a ',' or space.`n" -ForegroundColor $FGNotice
           }
-          else {
-            Write-Host "- Enter '+' to create a Computer Object at current location."
-          }
-          if ($OUPath -ne $StartingOU) {
-            Write-Host "- Enter '^' to return to Default OU location."
-            Write-Host "- Enter '<' to return to Parent OU location."
-          }
-          if ($ChildOUs) {
-            Write-Host "- Enter the ID number to move to the respective OU location."
-          }
-          Write-Host
 
           # Logic for handling user's input
-          [bool]$Valid = $False
-          do {
+          [bool]$Valid = $FALSE
+          do
+          {
             Write-Host "Enter your Selection:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
             $Selection = Read-Host
-            if ($Selection -eq '+') {
-              $Done = $True
-              $Valid = $True
-            }
-            elseif ($Selection -eq '^') {
-              $OUPath = $StartingOU
-              $ParentOU = $StartingOU
-              $Valid = $True
-            }
-            elseif ($Selection -eq '<') {
-              $OUPath = $ParentOU
-              $Valid = $True
-              if ($OUPath -eq $StartingOU) {
-                $ParentOU = $StartingOU
+            if ($Selection -eq '+')
+            {
+              ForEach ($Computer in $ComputerTable)
+              {
+                if ($Computer.SEL -eq "[X]")
+                {
+                  $EditObjects += $Computer.NAME
+                }
               }
-              else {
-                $ParentOU = ($ParentOU -split ',', 2)[1]
+
+              # Ensure at least one Computer Object was selected
+              if ($EditObjects.Count -gt 0)
+              {
+                $Done = $TRUE
+                $Valid = $TRUE
+              }
+              else
+              {
+                Write-Host "`nYou did not select a Computer Object." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                Write-Host "To select a Computer Object to edit, please enter an ID number listed above.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
+                Start-Sleep 2
               }
             }
-            elseif ($Selection -match "^\d+$" -and [int]$Selection -in 1..$ChildOUs.Count) {
-              $ParentOU = $OUPath
-              $Valid = $True
-              $OUPath = Get-ADOrganizationalUnit -Filter "Name -like '*'" -SearchBase $OUPath -SearchScope OneLevel | Select-Object -First $([int]$Selection) | Select-Object -Last 1
+            elseif ($Selection -match "\d+")
+            {
+              [array]$Choices = $Selection -split {$_ -eq " " -or $_ -eq ","}
+              ForEach ($ID in $Choices)
+              {
+                if ($ID -in 1..$ComputerTable.Count)
+                {
+                  if ($ComputerTable[$ID - 1].SEL -eq "[ ]")
+                  {
+                    $ComputerTable[$ID - 1].SEL = "[X]"
+                  }
+                  else
+                  {
+                    $ComputerTable[$ID - 1].SEL = "[ ]"
+                  }
+                  $Valid = $TRUE
+                }
+              }
             }
-            elseif ($Selection -eq "") {
+            elseif ($Selection -eq "")
+            {
               Write-Host "`nYou did not enter a selection. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              Start-Sleep 2
             }
-            else {
+            else
+            {
               Write-Host "`nYour selection doesn't exist. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              Start-Sleep 2
             }
           } while (!$Valid)
-          Clear-Host
         } while (!$Done)
       }
 
-      # Logic for entering Keywords to find desired OU
-      elseif ($Manual -eq $False -and ($Repeat -eq 2 -or $Confirmation -eq 1 -or $Confirmation -eq 0)) {
-        $OUManageGroups = Get-ADGroup -Filter "Name -like '*OUMANAGE*'" | Select-Object -ExpandProperty Name
-        $CurrentUserGroups = Get-ADPrincipalGroupMembership -Identity $([Environment]::UserName) | Select-Object -ExpandProperty Name
-        $ManageableOUS = $OUManageGroups | ?{$CurrentUserGroups -contains $_}
-
-        $Done = $False
-        do {
-          Clear-Host
-          Write-Host "`nFinding OU using Distinguished Name (DN), Canonical Name (CN), or select Keywords (KW)`n" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-          Write-Host "When entering any of these values, please use the following formats..." -ForegroundColor $FGLabel -BackgroundColor $BGBold
-          Write-Host "- DN: OU=USIT,OU=WORKSTATIONS,OU=COMPUTERS,OU=CUSTOM,DC=SGF,DC=EDUBEAR,DC=NET"
-          Write-Host "- CN: SGF.EDUBEAR.NET/CUSTOM/COMPUTERS/WORKSTATIONS/USIT"
-          Write-Host "- KW: USIT WORKSTATIONS`n"
-          $PotentialOUs = @()
-
-          [bool]$Valid = $False
-          do {
-            Write-Host "Enter the DN, CN, or KWs for the desired OU:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-            $EnteredOU = Read-Host
-            $OUKeywords = $EnteredOU.ToUpper() -split " "
-
-            # If the user entered the full DistinguishedName of the OU
-            if ($OUKeywords.Count -eq 1 -and $OUKeywords -match "^OU=.+$") {
-              $ValidOUPath = Get-ADOrganizationalUnit -Filter "Name -like '*'" -SearchBase $StartingOU | Where-Object {$_.DistinguishedName -match $OUKeywords} | Select-Object -ExpandProperty "DistinguishedName"
-              $ManageableOUS -split '-' | Where-Object {$_ -notin ("RM", "OUMANAGE")} -PipelineVariable Keyword | ForEach-Object {
-                $ValidOUPath = $ValidOUPath | ?{$_ -match $Keyword}
-              }
-              if ($ValidOUPath.Count -eq 0) {
-                Write-Host "`nThe Distinguished Name you entered could not find an OU Object. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-                Write-Host "If the Distinguished Name belongs to an existing OU, you may not have access to add objects to it.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-
-              }
-              else {
-                $PotentialOUs += $ValidOUPath
-                $Valid = $True
-              }
-            }
-            # If the user entered the full Canonical Name of the OU
-            elseif ($OUKeywords.Count -eq 1 -and $OUKeywords -match "^SGF.EDUBEAR.NET.+$") {
-              $ValidOUPath = Get-ADOrganizationalUnit -Filter "Name -like '*'" -SearchBase $StartingOU -Properties CanonicalName | Where-Object {$_.CanonicalName -match $OUKeywords} | Select-Object -ExpandProperty "DistinguishedName"
-              $ManageableOUS -split '-' | Where-Object {$_ -notin ("RM", "OUMANAGE")} -PipelineVariable Keyword | ForEach-Object {
-                $ValidOUPath = $ValidOUPath | ?{$_ -match $Keyword}
-              }
-              if ($ValidOUPath.Count -eq 0) {
-                Write-Host "`nThe Canonical Name you entered could not find an OU Object. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-                Write-Host "If the Canonical Name belongs to an existing OU, you may not have access to add objects to it.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-              }
-              else {
-                $PotentialOUs += $ValidOUPath
-                $Valid = $True
-              }
-            }
-            else {
-              ForEach ($Keyword in $OUKeywords) {
-                # Lists every OU on the AD that has the given keyword
-                $ValidOUPath = Get-ADOrganizationalUnit -Filter "Name -like '*'" -SearchBase $StartingOU -Properties CanonicalName -PipelineVariable OU |
-                Where-Object {$OU.Name -like $Keyword -or $OU.DistinguishedName -match $Keyword -or $OU.CanonicalName -match $Keyword} |
-                Select-Object -ExpandProperty DistinguishedName
-
-                # Verify Current User has Access to add objects to these OUs
-                $ManageableOUS -split '-' | Where-Object {$_ -notin ("RM", "OUMANAGE")} -PipelineVariable Keyword | ForEach-Object {
-                  $ValidOUPath = $ValidOUPath | ?{$_ -match $Keyword}
-                }
-
-                # Performing an Intersection of all keywords to narrow down potential OU choices
-                if ($PotentialOUs.Count -eq 0 -and $ValidOUPath -ne "") {
-                  $PotentialOUs += $ValidOUPath
-                }
-                else {
-                  $PotentialOUs = $PotentialOUs | ?{$ValidOUPath -contains $_}
-                }
-              }
-              if ($PotentialOUs.Count -eq 0) {
-                Write-Host "`nThe Keyword(s) you entered could not find an OU object. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-                Write-Host "If the Keyword(s) represent an existing OU, you may not have access to add objects to it." -ForegroundColor $FGNotice -BackgroundColor $BGBold
-                Write-Host "You might try putting in fewer Keywords as the search tries to find OUs with every Keyword entered.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-              }
-              else {
-                $Valid = $True
-              }
-            }
-          } while (!$Valid)
-
-          # To ensure that there is at least one OU available to choose from
-          if ($PotentialOUs.Count -gt 0) {
-            $Done = $True
-            [System.Collections.ArrayList]$SortedOUs = @()
-            $TotalOUs = $PotentialOUs.Count
-            $LongestOU = 0
-            $PotentialOUs = $PotentialOUs | Sort-Object -Descending
-
-            # Sorting the OUs pulled from the input into hierarchical order
-            do {
-              ForEach ($OU in $PotentialOUs) {
-
-                # Needed for formatting the OU list later
-                $Name = Get-ADOrganizationalUnit -Identity $OU | Select-Object -ExpandProperty Name
-                if ($Name.Length -gt $LongestOU) {
-                  $LongestOU = $Name.Length
-                }
-                $ParentOU = ($OU -split ',', 2)[1]
-                if ($PotentialOUs -notcontains $ParentOU) {
-                  $Index = 0..($SortedOUs.Count - 1) | Where-Object {$SortedOUs[$_] -eq $ParentOU}
-                  if ($Index -ne $null) {
-                    if ($SortedOUs.Count -eq 0) {
-                      $SortedOUs.Add($OU) | Out-Null
-                    }
-                    else {
-                      $SortedOUs.Insert($Index + 1, $OU)
-                    }
-                  }
-                  else {
-                    $SortedOUs.Insert(0, $OU)
-                  }
-                }
-              }
-              ForEach ($OU in $SortedOUs) {
-                $PotentialOUs = $PotentialOUs | Where-Object {$_ -ne $OU}
-              }
-            } while ($SortedOUs.Count -ne $TotalOUs)
-            $PotentialOUs = $SortedOUs
-
+      # Logic for entering Keywords to find desired Computer Object(s)
+      elseif ($Method -eq 2)
+      {
+        [bool]$Done = $FALSE
+        do
+        {
+          if ($EnteredKeywords -eq $NULL)
+          {
             Clear-Host
-            Write-Host "`nFinding OU using Distinguished Name (DN), Canonical Name (CN), or select Keywords (KW)`n" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-            Write-Host "Found $($PotentialOUs.Count) potential OU path(s).`n" -ForegroundColor $FGLabel -BackgroundColor $BGBold
-            $Spacer = "`t"
-            For ($i = 0; $i -lt [int](2 % $LongestOU); $i++) {
-              $Spacer += "`t"
-            }
-            Write-Host "ID`tNAME$($Spacer)DISTINGUISHEDNAME" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-            [int]$Index = 1
-            ForEach ($OU in $PotentialOUs) {
-              $Name = Get-ADOrganizationalUnit -Identity $OU | Select-Object -ExpandProperty Name
-              $Spacer = "`t"
-              For ($i = 0; $i -lt [int]((8 / $Name.Length) % $LongestOU); $i++) {
-                $Spacer += "`t"
-              }
-              Write-Host $Index`t$Name$Spacer$OU
-              $Index += 1
-            }
+            Write-Host "`nFinding Computer Object(s) using Name Keywords or MAC Address.`n" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+            Write-Host "When entering any of these values, please use the following formats..." -ForegroundColor $FGNotice -BackgroundColor $BGBold
+            Write-Host "- KW : CHEK 135"
+            Write-Host "- MAC: ABCDEF123456, AB CD EF 12 34 56, AB:CD:EF:12:34:56, AB-CD-EF-12-34-56"
+            do
+            {
+              Write-Host "`nEnter the Name or MAC Address of the desired Computer Object:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+              $EnteredKeywords = Read-Host
+              [array]$SearchKeywords = $EnteredKeywords.ToUpper() -split " "
 
-            Write-Host "`nOPTIONS" -ForegroundColor $FGInput -BackgroundColor $BGInput
-            Write-Host "- Enter the ID number to select the respective OU location."
-            Write-Host "- Enter '^' to try again if the desired OU is not listed.`n"
+              $SearchResults = Search-ADForest "ComputerObject" $SearchKeywords
+
+              if ($SearchResults -eq $NULL)
+              {
+                Write-Host "`nThe Keyword(s) you entered could not find a Computer Object. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                Write-Host "* If the Keyword(s) represent an existing Computer Object, you may not have permissions to add objects to it." -ForegroundColor $FGNotice
+                Write-Host "* You might try putting in fewer Keywords as the search tries to find Computer Objects with every Keyword entered.`n" -ForegroundColor $FGNotice
+              }
+            } while ($SearchResults -eq $NULL)
+          }
+
+          if ($SearchResults[-1].ID -gt 1)
+          {
+            Clear-Host
+            Write-Host "`nSearching for Computer Objects matching the search of:" -ForegroundColor $FGTitle -BackgroundColor $BGBold -NoNewLine
+            Write-Host " $EnteredKeywords"
+            Write-Host "`nFound $($SearchResults[-1].ID) potential Computer Object(s)." -ForegroundColor $FGNotice -BackgroundColor $BGBold -NoNewLine
+
+            $SearchResults | Format-Table SEL, ID, NAME, MAC, OUPATH | Format-Color @{'[X]' = 'Green'}
+
+            Write-Host "OPTIONS" -ForegroundColor $FGInput -BackgroundColor $BGInput
+            Write-Host "- Enter '+' to edit the currently selected Computer Objects"
+            Write-Host "- Enter '^' to try again if the desired Computer Object is not listed."
+            Write-Host "- Enter the ID number(s) to select/deselect the respective Computer Object(s)."
+            Write-Host "* To select multiple objects, enter all desired ID numbers separated by a ',' or space.`n" -ForegroundColor $FGNotice
 
             # Logic for handling user input
-            $Valid = $False
-            do {
+            $Valid = $FALSE
+            do
+            {
               Write-Host "Enter your Selection:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
               $Selection = Read-Host
-              if ($Selection -match "^\d+$" -and [int]$Selection -in 1..$PotentialOUs.Count) {
-                $OUPath = $PotentialOUs | Select-Object -First $([int]$Selection) | Select-Object -Last 1
-                $Valid = $True
+              if ($Selection -eq '+')
+              {
+                ForEach ($Computer in $SearchResults)
+                {
+                  if ($Computer.SEL -eq "[X]")
+                  {
+                    $EditObjects += $Computer.NAME
+                  }
+                }
+
+                # Ensure at least one Computer Object was selected
+                if ($EditObjects.Count -gt 0)
+                {
+                  $Done = $TRUE
+                  $Valid = $TRUE
+                }
+                else
+                {
+                  Write-Host "`nYou did not select a Computer Object." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                  Write-Host "To select a Computer Object to edit, please enter at least one of the ID numbers listed above.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
+                  Start-Sleep 2
+                }
               }
-              elseif ($Selection -eq '^') {
-                $Done = $False
-                $Valid = $True
-                Clear-Host
+              elseif ($Selection -eq '^')
+              {
+                $Done = $FALSE
+                $Valid = $TRUE
+                $EnteredKeywords = $NULL
               }
-              else {
-                Write-Host "`nYou did not enter a selection. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              elseif ($Selection -match "\d+")
+              {
+                [array]$Choices = $Selection -split {$_ -eq " " -or $_ -eq ","}
+                ForEach ($ID in $Choices)
+                {
+                  if ($ID -in 1..$SearchResults.Count)
+                  {
+                    if ($SearchResults[$ID - 1].SEL -eq "[ ]")
+                    {
+                      $SearchResults[$ID - 1].SEL = "[X]"
+                    }
+                    else
+                    {
+                      $SearchResults[$ID - 1].SEL = "[ ]"
+                    }
+                  }
+                  else
+                  {
+                    Write-Host "`nThe selected ID $($ID) does not exist." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                    Start-Sleep 2
+                  }
+                }
+                $Valid = $TRUE
+              }
+              elseif ($Selection -eq "")
+              {
+                Write-Host "`nYou did not enter a selection. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                Start-Sleep 2
+              }
+              else
+              {
+                Write-Host "`nYour selection doesn't exist. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                Start-Sleep 2
               }
             } while (!$Valid)
           }
-        } while (!$Done)
-      }
-
-
-      # Get Computer Name Loop
-      if ($Confirmation -eq 2 -or $Confirmation -eq 0 -or $Confirmation -eq "") {
-
-        Clear-Host
-        Write-Host "`nAdding Computer Object Attributes: Computer Name" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-        Write-Host "`nCURRENT VALUES" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-        Write-Host "Computer OU  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $OUPath"
-        Write-Host "Computer Name:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerName"
-        Write-Host "Computer MAC :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $MACAddress"
-        Write-Host "Computer Desc:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerDescription"
-        Write-Host "Computer DP  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $DeploymentServer`n"
-
-        # Check if the entered Computer Name is already tied to a Computer Object on the AD
-        $Done = $False
-        do {
-          Write-Host "Enter a Name for the new Computer Object:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-          $ComputerName = Read-Host
-          if ($ComputerName -eq "") {
-            Write-Host "`nYou did not enter a Computer Name. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
-          }
-          elseif ($ComputerName -match '^\.|([\\/:\*\?"<>\|])+') {
-            Write-Host `n'Computer Name cannot start with a . and\or contain the following: \ / : * ? " < > |'`n -ForegroundColor $FGWarning -BackgroundColor $BGBold
-          }
-          elseif ($ComputerName.Length -notin 1..15) {
-            Write-Host "`nComputer Name must be between 1 and 15 characters.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
-          }
-          elseif ($ComputerName.ToUpper() -in $ReservedWords) {
-            Write-Host "`n$($ComputerName.ToUpper()) is a Reserved Word and can't be a Computer Name." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-            Write-Host "The following words are Reserved Words, as deemed by Microsoft:" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-            Write-Host ($ReservedWords -join ", ")`n -ForegroundColor $FGNotice -BackgroundColor $BGBold
-          }
-          else {
-            $ComputerName = $ComputerName.ToUpper()
-            $CheckName = Get-ADObject -Filter "ObjectClass -eq 'computer' -and Name -eq '$($ComputerName)'"
-            if ($CheckName -eq $null) {
-              $Done = $True
-            }
-            else {
-              Write-Host "`nThere is already a Computer Object with that Name:`n$($CheckName.DistinguishedName)`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
-            }
+          elseif ($SearchResults[-1].ID -eq 1)
+          {
+            $Done = $TRUE
+            $EditObjects += $SearchResults[0].NAME
           }
         } while (!$Done)
       }
 
-      # Get Computer MAC Address Loop
-      if ($Confirmation -eq 3 -or $Confirmation -eq 0 -or $Confirmation -eq "") {
+      # Retrieve attributes for all computer objects to edit
+      ForEach ($ObjectName in $EditObjects)
+      {
+        $ObjectInformation = Get-ADComputer -Identity $ObjectName -Properties Description, netbootGUID, netbootMachineFilePath
 
-        Clear-Host
-        Write-Host "`nAdding Computer Object Attributes: Computer MAC Address" -ForegroundColor $FGtitle -BackgroundColor $BGBold
-        Write-Host "`nCURRENT VALUES" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-        Write-Host "Computer OU  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $OUPath"
-        Write-Host "Computer Name:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerName"
-        Write-Host "Computer MAC :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $MACAddress"
-        Write-Host "Computer Desc:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerDescription"
-        Write-Host "Computer DP  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $DeploymentServer`n"
+        $OUPath = ($ObjectInformation.DistinguishedName -Split ',', 2)[1]
+        $ComputerName = $ObjectInformation.Name
+        [String]$netbootGUID = ($ObjectInformation.netbootGUID | ForEach-Object ToString X2) -join ""
+        $ComputerMAC = $netbootGUID.SubString($netbootGUID.length - 12)
+        $ComputerDesc = $ObjectInformation.Description
+        $ComputerDP = $ObjectInformation.netbootMachineFilePath
 
-        # Check if the given MAC Address is already tied to a Computer Object on the AD
-        $Done = $False
-        do {
-          Write-Host "Enter the MAC Address for the Computer Object (Ex. 1A2B3C4D5E6F):`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-          $EnteredMAC = Read-Host
-          if ($EnteredMAC -eq "") {
-            Write-Host "`nYou did not enter a MAC Address. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
-          }
-          elseif ($EnteredMAC -match ($ValidMACPatterns -join '|')) {
-            $MACAddress = $EnteredMAC.ToUpper() -replace '\W'
-            [guid]$NetbootGUID = "00000000-0000-0000-0000-$MACAddress"
-            $CheckMAC = Get-ADComputer -Filter {netbootGUID -like $NetbootGUID}
-            if ($CheckMAC -eq $null) {
-              $Done = $True
+        $NewOU = $NewName = $NewMAC = $NewDescription = $NewDP = $NULL
+
+        [System.Collections.ArrayList]$Changes = @()
+        [bool]$Editing = $TRUE
+        do
+        {
+          # Logic for handling user input
+          $Valid = $FALSE
+          do
+          {
+            # List commonly modified attributes for Computer Objects (OU Location, Computer Name, Description netbootGUID, Deployment Server)
+            Clear-Host
+            Write-Host "`nThese are the current attributes of the selected Computer Object.`n" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+            Write-Host "Any prospective changes to the object will be listed in Green." -ForegroundColor $FGNotice -BackgroundColor $BGBold
+            Write-Host "`nCURRENT VALUES" -ForegroundColor $FGHeader -BackgroundColor $BGBold
+
+            Write-Host "Computer OU  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewOU -and $NewOU -ne $OUPath) { Write-Host " $NewOU" -ForegroundColor $FGSuccess }
+            else { Write-Host " $OUPath" }
+
+            Write-Host "Computer Name:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewName) { Write-Host " $NewName" -ForegroundColor $FGSuccess }
+            else { Write-Host " $ComputerName" }
+
+            Write-Host "Computer MAC :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewMAC) { Write-Host " $NewMAC" -ForegroundColor $FGSuccess }
+            else { Write-Host " $ComputerMAC" }
+
+            Write-Host "Computer Desc:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewDescription) { Write-Host " $NewDescription" -ForegroundColor $FGSuccess }
+            else { Write-Host " $ComputerDesc" }
+
+            Write-Host "Computer DP  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewDP) { Write-Host " $NewDP" -ForegroundColor $FGSuccess }
+            else { Write-Host " $ComputerDP" }
+
+            Write-Host "`nOPTIONS" -ForegroundColor $FGHeader -BackgroundColor $BGBold
+            Write-Host "- Enter '1' to change the Current OU Path."
+            Write-Host "- Enter '2' to change the Computer Name."
+            Write-Host "- Enter '3' to change the Computer MAC."
+            Write-Host "- Enter '4' to change the Computer Description."
+            Write-Host "- Enter '5' to change the Computer Distribution Point."
+            Write-Host "- Press ENTER to confirm changes."
+            Write-Host "* To select multiple options, enter all desired option numbers separated by a ',' or space.`n" -ForegroundColor $FGNotice
+
+            Write-Host "Enter your Selection:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+            $Selection = Read-Host
+            if ($Selection -eq "")
+            {
+              if ($NewOU -or $NewName -or $NewMAC -or $NewDescription -or $NewDP)
+              {
+                $Valid = $TRUE
+                $Editing = $FALSE
+              }
+              else
+              {
+                Write-Host "It appears no changes have been made. To confirm, please enter '*'." -ForegroundColor $FGNotice -BackgroundColor $BGBold
+                Write-Host "Otherwise, please enter one of the options listed above.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
+                Write-Host "Enter your Selection:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+                $ConfirmChanges = Read-Host
+                if ($ConfirmChanges -eq '*')
+                {
+                  $Valid = $TRUE
+                  $Editing = $FALSE
+                }
+              }
             }
-            else {
-              Write-Host "`nThere is already a Computer Object with that MAC Address:`n$($CheckMAC.DistinguishedName)`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+            elseif ($Selection -match "\d+")
+            {
+              [array]$Choices = $Selection -split {$_ -eq " " -or $_ -eq ","}
+              ForEach ($Option in $Choices)
+              {
+                if ($Option -notin $Changes -and $Option -match "[1-5]")
+                {
+                  $Changes.Add($Option) | Out-Null
+                }
+              }
+              if ($Changes.Count -gt 0)
+              {
+                $Valid = $TRUE
+              }
+              else
+              {
+                Write-Host "`nYour selection doesn't exist. Please select at least one of the options above and try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              }
             }
-          }
-          else {
-            Write-Host "`nThe entered MAC Address is not properly formatted." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-            Write-Host "A properly formatted MAC Address is a series of 12 Hexadecimal characters (0-9, A-F)" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-            Write-Host "The characters can be delimited (or not) at every two characters by a ':', '-', '.', or ' '.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-          }
-        } while (!$Done)
-      }
+            else
+            {
+              Write-Host "`nYour selection doesn't exist. Please select at least one of the options above and try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+            }
+          } while (!$Valid)
 
-      # Get Computer Description Loop
-      if ($Confirmation -eq 4 -or $Confirmation -eq 0 -or $Confirmation -eq "") {
-
-        Clear-Host
-        Write-Host "`nAdding Computer Object Attributes: Computer Description" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-        Write-Host "`nCURRENT VALUES" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-        Write-Host "Computer OU  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $OUPath"
-        Write-Host "Computer Name:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerName"
-        Write-Host "Computer MAC :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $MACAddress"
-        Write-Host "Computer Desc:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerDescription"
-        Write-Host "Computer DP  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $DeploymentServer`n"
-
-        # Add Computer's Description
-        Write-Host "Enter the Computer Object's Description Ex. 'Boomer Bear (CARR 0123)':`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-        $ComputerDescription = Read-Host
-      }
-
-      # Get Computer Deployment Server Loop
-      if ($Confirmation -eq 5 -or $Confirmation -eq 0 -or $Confirmation -eq "") {
-
-        Clear-Host
-        Write-Host "`nAdding Computer Object Attributes: Deployment Server" -ForegroundColor $FGTitle -BackgroundColor $BGBold
-        Write-Host "`nCURRENT VALUES" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-        Write-Host "Computer OU  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $OUPath"
-        Write-Host "Computer Name:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerName"
-        Write-Host "Computer MAC :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $MACAddress"
-        Write-Host "Computer Desc:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $ComputerDescription"
-        Write-Host "Computer DP  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-        Write-Host " $DeploymentServer`n"
-
-        # Select appropriate Deployment Server
-        Write-Host "ID`tDISTRIBUTION POINT" -ForegroundColor $FGNotice -BackgroundColor $BGBold
-        For ([int]$i = 0; $i -lt $DistributionPoints.Count; $i++) {
-          Write-Host "$($i+1)`t$($DistributionPoints[$i].ToUpper() -replace '\\')"
-        }
-
-        # Logic for handling user input
-        $Done = $False
-        do {
-          Write-Host "`nEnter the ID of the Distribution Point for this Computer Object:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-          $Selection = Read-Host
-          if ($Selection -eq "") {
-            Write-Host "`nYou did not enter a selection. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-
-          }
-          elseif ($Selection -match "^\d+$" -and [int]$Selection -in 1..$DistributionPoints.Count) {
-            $DistributionPoint = $DistributionPoints | Select-Object -First $([int]$Selection) | Select-Object -Last 1
-            $NetbootMFP = $DistributionPoints | Where-Object {$_ -match $DistributionPoint}
-            $DeploymentServer = $NetbootMFP.ToUpper() -replace "\\"
-            $Done = $True
-          }
-          else {
-            Write-Host "`nYour selection doesn't exist. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-          }
-        } while (!$Done)
-      }
-
-      # Confirm or change all the values given before creating the computer object
-      Clear-Host
-      Write-Host "`nThese are the Computer Object values you have entered." -ForegroundColor $FGTitle -BackgroundColor $BGBold
-      Write-Host "`nCURRENT VALUES" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-      Write-Host "Computer OU  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-      Write-Host " $OUPath"
-      Write-Host "Computer Name:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-      Write-Host " $ComputerName"
-      Write-Host "Computer MAC :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-      Write-Host " $MACAddress"
-      Write-Host "Computer Desc:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-      Write-Host " $ComputerDescription"
-      Write-Host "Computer DP  :" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
-      Write-Host " $DeploymentServer`n"
-
-      Write-Host "OPTIONS" -ForegroundColor $FGHeader -BackgroundColor $BGBold
-      Write-Host "- Enter '1' to change the Current OU Path."
-      Write-Host "- Enter '2' to change the Computer Name."
-      Write-Host "- Enter '3' to change the Computer MAC."
-      Write-Host "- Enter '4' to change the Computer Description."
-      Write-Host "- Enter '5' to change the Computer Distribution Point."
-      Write-Host "- Press Enter to confirm these values.`n"
-
-      # Logic for handling user input
-      $Done = $False
-      do {
-        Write-Host "Enter your Selection:`n" -ForegroundColor $UserInputFGColor -BackgroundColor $BGBold -NoNewLine
-        $Confirmation = Read-Host
-        if ($Confirmation -in 1..5 -or $Confirmation -eq "") {
-          $Done = $True
-        }
-        else {
-          Write-Host "`nYour selection doesn't exist. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-        }
-      } while (!$Done)
-
-      if ($Confirmation -eq "") {
-        New-ADComputer -Name $ComputerName -SamAccountName $ComputerName -Description $ComputerDescription -OtherAttributes @{'netbootGUID' = $NetbootGUID; 'netbootMachineFilePath' = $DeploymentServer} -Path $OUPath
-
-        # This check is to ensure that the machine was actually added to the AD
-        $CheckAddition = Get-ADComputer -Identity $ComputerName
-        if ($CheckAddition) {
-
-          # Object Information to export to CSV
-          $ComputerLog = [PSCustomObject]@{
-            COMPUTERNAME = $ComputerName
-            OUPATH = $OUPath
-            ADDEDBY = $([Environment]::UserName)
-            DATEADDED = Get-Date
-            SUCCESSFUL = $TRUE
-            ERRORS = $ErrorLog
-          }
-
-          # Add Object to array which is exported at the end
-          $ComputersAdded += $ComputerLog
-
-          Write-Host "`nThe computer $ComputerName has been added to the Active Directory successfully.`n" -ForegroundColor $FGSuccess -BackgroundColor $BGBold
-        }
-        else {
-          Write-Host "`nSomething went wrong and the Computer Object was unable to be added to the Active Directory. Please close the script and try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
-          Write-Host "If this continues to happen, please contact your system administrator.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
-        }
-
-        Write-Host "OPTIONS" -BackgroundColor $BGBold
-        if ($CheckAddition) {
-          Write-Host "- Enter '1' to add another Computer Object to the same OU Path."
-          if ($Manual -eq $True) {
-            Write-Host "- Enter '2' to add another Computer Object starting at the Default OU Path."
-          }
-          elseif ($Manual -eq $False) {
-            Write-Host "- Enter '2' to add another Computer Object, but search for a different OU location."
-          }
-        }
-        Write-Host "- Press Enter to quit.`n"
-        $Valid = $False
-
-        # Logic for handling user input
-        do {
-          Write-Host "Enter your Selection:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
-          $Repeat = Read-Host
-
-          if ($Repeat -eq 1 -or $Repeat -eq 2) {
-            $Valid = $True
-
-            # Reset Values for next Computer Object
-            $ComputerName = ''
-            $MACAddress = ''
-            $ComputerDescription = ''
-            $DeploymentServer = ''
-            if ($Repeat -eq 2) {
-              $OUPath = $StartingOU
-              $Confirmation = 0
+          # Logic for changing the Computer's OU location
+          if (1 -in $Changes -and $Method -eq 1)
+          {
+            Clear-Host
+            $NewOU = Show-ADForest "Edit OU for Computer Object by Searching for Location Manually" "Add" $OUPath
+            if ($NewOU -eq $OUPath)
+            {
+              $NewOU = $FALSE
             }
           }
-          elseif ($Repeat -eq "") {
-            # Export all Computers created to CSV
-            $Valid = $True
-            Get-Process Excel -ErrorAction SilentlyContinue | Select-Object -Property ID | Stop-Process
-            Start-Sleep -Milliseconds 300
-            $ComputersAdded | Export-CSV -Path $LogFilePath -NoTypeInformation -Append
-            Exit
+
+          elseif (1 -in $Changes -and $Method -eq 2)
+          {
+            do
+            {
+              Clear-Host
+              Write-Host "`nEdit OU for Computer Object using Distinguished Name (DN), Canonical Name (CN), or select Keywords (KW)`n" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+              Write-Host "Computer Object's Current OU Path:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+              Write-Host " $OUPath"
+
+        			Write-Host "`nWhen entering any of these values, please use the following formats..." -ForegroundColor $FGNotice -BackgroundColor $BGBold
+        			Write-Host "- DN: OU=USIT,OU=WORKSTATIONS,OU=COMPUTERS,OU=CUSTOM,DC=SGF,DC=EDUBEAR,DC=NET"
+        			Write-Host "- CN: SGF.EDUBEAR.NET/CUSTOM/COMPUTERS/WORKSTATIONS/USIT"
+        			Write-Host "- KW: USIT WORKSTATIONS`n"
+
+              do
+              {
+          			Write-Host "Enter the DN, CN, or KWs for the desired OU:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+          			$EnteredKeywords = Read-Host
+          			$SearchKeywords = $EnteredKeywords.ToUpper() -split " "
+
+                $SearchResults = Search-ADForest "OrganizationalUnit" $SearchKeywords
+
+                if ($SearchResults -ne $NULL)
+                {
+                  Write-Host "`nFound $($SearchResults[-1].ID) potential OU path(s)." -ForegroundColor $FGNotice -BackgroundColor $BGBold -NoNewLine
+
+                  $SearchResults | Format-Table
+
+                  Write-Host "OPTIONS" -ForegroundColor $FGInput -BackgroundColor $BGInput
+                  Write-Host "- Enter '^' to try again if the desired OU is not listed."
+                  Write-Host "- Enter the ID number to select the respective OU location.`n"
+
+                  # Logic for handling user input
+                  $Valid = $FALSE
+                  do
+                  {
+                    Write-Host "Enter your Selection:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+                    $Selection = Read-Host
+                    if ($Selection -match "^\d+$" -and $Selection -in 1..$SearchResults.Count)
+                    {
+                      $NewOU = $SearchResults[$Selection - 1].DISTINGUISHEDNAME
+                      if ($NewOU -eq $OUPath) { $NewOU = $FALSE }
+                      else
+                      {
+                        try
+                        {
+                          New-ADComputer -Name "TEST-AD-PERMISSIONS" -SamAccountName "TEST-AD-PERMISSIONS" -Path $NewOU
+                          Remove-ADComputer -Identity "TEST-AD-PERMISSIONS" -Confirm:$FALSE
+                          $Done = $TRUE
+                          $Valid = $TRUE
+                        }
+                        catch
+                        {
+                          Write-Host "`nYou do not have permissions to add computer objects to this OU. Please select another location.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                          $NewOU = $NULL
+                        }
+                      }
+                    }
+                    elseif ($Selection -eq '^')
+                    {
+                      $Done = $FALSE
+                      $Valid = $TRUE
+                    }
+                    else
+                    {
+                      Write-Host "`nYou did not enter a selection. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                    }
+                  } while (!$Valid -and !$Done)
+                }
+                else
+                {
+                  Write-Host "`nThe Keyword(s) you entered could not find an Organizational Unit. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                  Write-Host "* If the Keyword(s) represent an existing Organizational Unit, you may not have permissions to add objects to it." -ForegroundColor $FGNotice
+                  Write-Host "* You might try putting in fewer Keywords as the search tries to find Organizational Units with every Keyword entered." -ForegroundColor $FGNotice
+                }
+              } while ($SearchResults -eq $NULL)
+            } while ($NewOU -eq $NULL)
           }
-          else {
-            Write-Host "Your selection doesn't exist. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+
+          # Logic for changing the Computer's Name
+          if (2 -in $Changes)
+          {
+            Clear-Host
+            Write-Host "`nEdit Name for Computer Object" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+            Write-Host "`nCurrent Computer Name:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewName) { Write-Host " $NewName"}
+            else { Write-Host " $ComputerName"}
+
+            do
+            {
+              Write-Host "`nEnter a new Name for the Computer Object:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+              $EnteredName = Read-Host
+              if ($EnteredName -eq "")
+              {
+                Write-Host "`nYou did not enter a Computer Name. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              }
+              elseif ($EnteredName -match '^\.|([\\/:\*\?"<>\|])+')
+              {
+                Write-Host `n'Computer Name cannot start with a . and\or contain the following: \ / : * ? " < > |'`n -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              }
+              elseif ($EnteredName.Length -notin 1..15)
+              {
+                Write-Host "`nComputer Name must be between 1 and 15 characters.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              }
+              elseif ($EnteredName.ToUpper() -in $ReservedWords)
+              {
+                Write-Host "`n$($EnteredName.ToUpper()) is a Reserved Word and can't be a Computer Name." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                Write-Host "The following words are Reserved Words, as deemed by Microsoft:" -ForegroundColor $FGNotice -BackgroundColor $BGBold
+                Write-Host ($ReservedWords -join ", ")`n -ForegroundColor $FGNotice -BackgroundColor $BGBold
+              }
+              else
+              {
+                $EnteredName = $EnteredName.ToUpper()
+                if ($EnteredName -eq $ComputerName) { $NewName = $FALSE }
+                else
+                {
+                  $CheckName = Get-ADObject -Filter "ObjectClass -eq 'computer' -and Name -eq '$($EnteredName)'"
+                  if ($CheckName -eq $NULL)
+                  {
+                    $NewName = $EnteredName
+                  }
+                  else
+                  {
+                    Write-Host "`nThere is already a Computer Object with that Name:`n$($CheckName.DistinguishedName)`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                  }
+                }
+              }
+            } while ($NewName -eq $NULL)
           }
-        } while (!$Valid)
+
+          # Logic for changing the Computer's MAC
+          if (3 -in $Changes)
+          {
+            Clear-Host
+            Write-Host "`nEdit MAC Address for Computer Object" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+            Write-Host "`nCurrent MAC Address:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewMAC) { Write-Host " $NewMAC" }
+            else { Write-Host " $ComputerMAC" }
+
+            do
+            {
+              Write-Host "`nEnter a new MAC Address for the Computer Object (Ex. 1A2B3C4D5E6F):`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+              $EnteredMAC = Read-Host
+              if ($EnteredMAC -eq "")
+              {
+                Write-Host "`nYou did not enter a MAC Address. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              }
+              elseif ($EnteredMAC -match ($ValidMACPatterns -join '|'))
+              {
+                $MACAddress = $EnteredMAC.ToUpper() -replace '\W'
+                if ($MACAddress -eq $ComputerMAC) { $NewMAC = $FALSE }
+                else
+                {
+                  [guid]$NetbootGUID = "00000000-0000-0000-0000-$MACAddress"
+                  $CheckMAC = Get-ADComputer -Filter {netbootGUID -like $NetbootGUID}
+                  if ($CheckMAC -eq $NULL)
+                  {
+                    $NewMAC = $MACAddress
+                  }
+                  else
+                  {
+                    Write-Host "`nThere is already a Computer Object with that MAC Address:`n$($CheckMAC.DistinguishedName)`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                  }
+                }
+              }
+              else
+              {
+                Write-Host "`nThe entered MAC Address is not properly formatted." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+                Write-Host "A properly formatted MAC Address is a series of 12 Hexadecimal characters (0-9, A-F)" -ForegroundColor $FGNotice -BackgroundColor $BGBold
+                Write-Host "The characters can be delimited (or not) at every two characters by a ':', '-', '.', or ' '.`n" -ForegroundColor $FGNotice -BackgroundColor $BGBold
+              }
+            } while ($NewMAC -eq $NULL)
+          }
+
+          # Logic for changing the Computer's Description
+          if (4 -in $Changes)
+          {
+            Clear-Host
+            Write-Host "`nEdit Description for Computer Object" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+            Write-Host "`nCurrent Description:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewDescription) { Write-Host " $NewDescription"}
+            else { Write-Host " $ComputerDesc" }
+
+            Write-Host "`nEnter a new Description for the Computer Object Ex. 'Boomer Bear (CARR 0123)':`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+            $NewDescription = Read-Host
+            if ($NewDescription -eq $ComputerDesc) { $NewDescription = $FALSE }
+          }
+
+          # Logic for changing the Computer's Deployment Server
+          if (5 -in $Changes)
+          {
+            Clear-Host
+            $DeploymentTable = @()
+            For ([int]$i = 0; $i -lt $DistributionPoints.Count; $i++)
+            {
+              $TableRow =
+              [PSCustomObject]@{
+                ID = $i+1
+                DISTRIBUTIONPOINT = $DistributionPoints[$i].ToUpper()
+              }
+              $DeploymentTable += $TableRow
+            }
+
+            Write-Host "`nEdit Distribution Point for Computer Object" -ForegroundColor $FGTitle -BackgroundColor $BGBold
+            Write-Host "`nCurrent Distribution Point:" -ForegroundColor $FGLabel -BackgroundColor $BGBold -NoNewLine
+            if ($NewDP) { Write-Host " $NewDP" }
+            else { Write-Host " $ComputerDP" }
+
+            $DeploymentTable | Format-Table
+
+            # Logic for handling user input
+            do
+            {
+              Write-Host "`nEnter the ID of the Distribution Point for this Computer Object:`n" -ForegroundColor $FGInput -BackgroundColor $BGInput -NoNewLine
+              $Selection = Read-Host
+              if ($Selection -eq "")
+              {
+                Write-Host "`nYou did not enter a selection. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              }
+              elseif ($Selection -match "^\d+$" -and $Selection -in 1..$DeploymentTable.Count)
+              {
+                $DistributionPoint = $DeploymentTable[$Selection - 1].DISTRIBUTIONPOINT
+                $NetbootMFP = $DistributionPoints | Where-Object {$_ -match $DistributionPoint}
+                $NewDP = $NetbootMFP.ToUpper() -replace "\\"
+                if ($NewDP -eq $ComputerDP) { $NewDP = $FALSE }
+              }
+              else
+              {
+                Write-Host "`nYour selection doesn't exist. Please try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+              }
+            } while ($NewDP -eq $NULL)
+          }
+
+          if ($Changes.Count -gt 0)
+          {
+            $Changes.Clear()
+          }
+        } while ($Editing)
+
+        #Perform changes and log them here
+        $Edits = ""
+        if ($NewMAC -or $NewDescription -or $NewDP)
+        {
+          $ReplaceValues = @{}
+          if ($NewMAC)
+          {
+            $ReplaceValues["netbootGUID"] = $NetbootGUID
+            $Edits += "MAC Address changed;"
+          }
+          if ($NewDescription)
+          {
+            $ReplaceValues["description"] = $NewDescription
+            $Edits += "Description changed;"
+          }
+          if ($NewDP)
+          {
+            $ReplaceValues["netbootMachineFilePath"] = $NewDP
+            $Edits += "Deployment Server changed;"
+          }
+
+          try
+          {
+            Set-ADComputer -Identity $ObjectInformation.DistinguishedName -Replace $ReplaceValues
+            $ReplaceValues.Clear()
+          }
+          catch
+          {
+            Write-Host "`nSomething went wrong and the Computer Object was unable to be edited. Please close the script and try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+            Write-Host "If this continues to happen, please contact your system administrator.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+          }
+        }
+        if ($NewOU -or $NewName)
+        {
+          $ObjectPlaceholder = Get-ADComputer -Identity $ComputerName -Properties Description, netbootGUID, netbootMachineFilePath
+          if ($NewOU)
+          {
+            $OUPath = $NewOU
+            $Edits += "OU Path changed;"
+          }
+          if ($NewName)
+          {
+            $ComputerName = $NewName
+            $Edits += "Computer Name changed;"
+          }
+
+          try
+          {
+            Remove-ADComputer -Identity $ObjectPlaceholder.Name -Confirm:$FALSE
+            New-ADComputer -Name $ComputerName -SamAccountName $ComputerName -Description $ObjectPlaceholder.Description -OtherAttributes @{'netbootGUID' = $ObjectPlaceholder.netbootGUID; 'netbootMachineFilePath' = $ObjectPlaceholder.netbootMachineFilePath} -Path $OUPath
+          }
+          catch
+          {
+            Write-Host "`nSomething went wrong and the Computer Object was unable to be edited. Please close the script and try again." -ForegroundColor $FGWarning -BackgroundColor $BGBold
+            Write-Host "If this continues to happen, please contact your system administrator.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+          }
+        }
+
+        # Object Information to export to CSV
+        $ComputerLog =
+        [PSCustomObject]@{
+          ACTION = "MOD"
+          COMPUTERNAME = $ComputerName
+          OUPATH = $OUPath
+          ACTIONSBY = $([Environment]::UserName)
+          DATEADDED = $NULL
+          DATEMODIFIED = Get-Date
+          DATEDELETED = $NULL
+          SUCCESSFUL = $TRUE
+          CHANGES = $Edits
+          ERRORS = $NULL
+        }
+        $Global:ComputerArchive += $ComputerLog
       }
-    } while ($Repeat -eq 1 -or $Repeat -eq 2 -or $Confirmation -ne 0)
-  }
+    }
+    else
+    {
+      Write-Host "`nYour selection doesn't exist. Please try again.`n" -ForegroundColor $FGWarning -BackgroundColor $BGBold
+    }
+  } while ($Method -notin 1..2)
 }
