@@ -232,6 +232,7 @@ function Global:Search-ADForest([string]$SearchObject = "", [array]$SearchKeywor
 			}
 		}
 	}
+
 	if ($SearchObject -eq "ComputerObject")
 	{
 		# If the user entered a MAC Address
@@ -458,16 +459,6 @@ $Global:ValidMACPatterns =
   '^([0-9a-f]{12})$'
 )
 
-# The needed headers for the CSV file when importing Computer Objects from a CSV file
-$Global:CorrectCSVHeaders =
-@(
-  "COMPUTERNAME",
-  "COMPUTERMAC",
-  "COMPUTERDESC",
-  "COMPUTEROU",
-  "DEPLOYMENTSERVER"
-)
-
 [bool]$Running = $TRUE
 do
 {
@@ -483,6 +474,7 @@ do
 		Write-Host "- Enter '2' to ADD a new Computer to the domain."
 		Write-Host "- Enter '3' to EDIT an existing Computer on the domain."
 		Write-Host "- Enter '4' to REMOVE an existing Computer from the domain."
+		Write-Host "- Enter '5' to UPDATE the Active Directory with a CSV file."
 		Write-Host "- Press ENTER to QUIT.`n"
 	}
 
@@ -527,7 +519,7 @@ do
 		{
 			$Valid = $TRUE
 			Import-Module .\Modules\Update-ADObject.psm1
-			# Update-ADObject
+			Update-ADObject
 		}
 	  else
 	  {

@@ -313,7 +313,7 @@ function Remove-ADObject
         {
           try
           {
-            Remove-ADComputer -Identity $ObjectName -Confirm:$False
+            Remove-ADComputer -Identity $ObjectName -Confirm:$FALSE
           }
           catch
           {
